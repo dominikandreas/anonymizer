@@ -1,8 +1,7 @@
 ___
 
-⚠️  **ARCHIVED REPOSITORY** ⚠️   
-
-**We decided to archive this repository to make it read-only and indicate that it's no longer actively maintained.**
+**Forked Repository**
+Since the original repository is archived and no longer maintained, I decided to create a fork with some minor updates. 
 ___
 
 # understand.ai Anonymizer [ARCHIVED]
