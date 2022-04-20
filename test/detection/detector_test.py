@@ -20,7 +20,7 @@ def load_np_image(image_path):
 class TestDetector:
     @staticmethod
     def test_it_detects_obvious_faces(tmp_path):
-        weights_directory = tmp_path / 'weights'
+        weights_directory = '.'
         face_weights_path = get_weights_path(weights_directory, kind='face')
         download_weights(weights_directory)
 
@@ -38,3 +38,10 @@ class TestDetector:
         assert boxes[0].score >= 0.5 and boxes[1].score >= 0.5
         assert ((box_covers_box(boxes[0], left_face) and box_covers_box(boxes[1], right_face)) or
                 (box_covers_box(boxes[1], left_face) and box_covers_box(boxes[0], right_face)))
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    output_path = Path("/tmp/anonymizer_test")
+    output_path.mkdir(exist_ok=True)
+    TestDetector.test_it_detects_obvious_faces(output_path)

@@ -7,7 +7,7 @@ from anonymizer.utils import Box
 class Detector:
     def __init__(self, kind, weights_path):
         self.kind = kind
-
+        tf.debugging.set_log_device_placement(True)
         self.detection_graph = tf.Graph()
         with self.detection_graph.as_default():
             od_graph_def = tf.GraphDef()
@@ -35,22 +35,34 @@ class Detector:
             result_boxes.append(box)
         return result_boxes
 
-    def detect(self, image, detection_threshold):
-        image_tensor = self.detection_graph.get_tensor_by_name('image_tensor:0')
-        num_detections = self.detection_graph.get_tensor_by_name('num_detections:0')
-        detection_scores = self.detection_graph.get_tensor_by_name('detection_scores:0')
-        detection_boxes = self.detection_graph.get_tensor_by_name('detection_boxes:0')
+    @property
+    def image_tensor(self):
+        return self.detection_graph.get_tensor_by_name('image_tensor:0')
+    @property
+    def num_detections(self):
+        return self.detection_graph.get_tensor_by_name('num_detections:0')
+    @property
+    def detection_scores(self):
+        return self.detection_graph.get_tensor_by_name('detection_scores:0')
+    @property
+    def detection_boxes(self):
+        return self.detection_graph.get_tensor_by_name('detection_boxes:0')
 
-        image_height, image_width, channels = image.shape
+    def detect_batch(self, images, detection_threshold):
+        image_height, image_width, channels = images[0].shape
         assert channels == 3, f'Invalid number of channels: {channels}. ' \
                               f'Only images with three color channels are supported.'
+        np_images = np.array(images)
+        num_boxes_batch, scores_batch, boxes_batch = self.session.run(
+            [self.num_detections, self.detection_scores, self.detection_boxes],
+            feed_dict={self.image_tensor: np_images}
+        )
+        return [
+            self._convert_boxes(num_boxes=num_boxes, scores=scores, boxes=boxes,
+                                image_height=image_height, image_width=image_width,
+                                detection_threshold=detection_threshold)
+            for num_boxes, scores, boxes in zip(num_boxes_batch, scores_batch, boxes_batch)
+        ]
 
-        np_images = np.array([image])
-        num_boxes, scores, boxes = self.session.run(
-            [num_detections, detection_scores, detection_boxes],
-            feed_dict={image_tensor: np_images})
-
-        converted_boxes = self._convert_boxes(num_boxes=num_boxes[0], scores=scores[0], boxes=boxes[0],
-                                              image_height=image_height, image_width=image_width,
-                                              detection_threshold=detection_threshold)
-        return converted_boxes
+    def detect(self, image, detection_threshold):
+        return self.detect_batch([image], detection_threshold)[0]

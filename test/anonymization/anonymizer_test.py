@@ -23,8 +23,8 @@ class MockDetector:
     def __init__(self, detected_boxes):
         self.detected_boxes = detected_boxes
 
-    def detect(self, image, detection_threshold):
-        return self.detected_boxes
+    def detect_batch(self, images, detection_threshold):
+        return [self.detected_boxes for _ in images]
 
 
 class TestAnonymizer:
@@ -40,7 +40,7 @@ class TestAnonymizer:
         expected_anonymized_image[100:120, 10:30] = 0.0
 
         anonymizer = Anonymizer(detectors={'face': mock_detector}, obfuscator=obfuscator)
-        anonymized_image, detected_boxes = anonymizer.anonymize_image(input_image, detection_thresholds={'face': 0.1})
+        anonymized_image, detected_boxes = anonymizer.anonymize_images_np([input_image], detection_thresholds={'face': 0.1})[0]
 
         assert np.all(np.isclose(expected_anonymized_image, anonymized_image))
         assert detected_boxes == [Box(y_min=0, x_min=10, y_max=20, x_max=30, score=0.5, kind=''),
@@ -60,7 +60,6 @@ class TestAnonymizer:
             expected_anonymized_images[i][100:120, 10:30] = 0
         # write input images to disk
         input_path = tmp_path / 'input'
-        input_path.mkdir()
         output_path = tmp_path / 'output'
         for i, input_image in enumerate(input_images):
             image_path = input_path / f'{i}.png'
@@ -77,3 +76,11 @@ class TestAnonymizer:
 
         for i, expected_anonymized_image in enumerate(expected_anonymized_images):
             assert np.all(np.isclose(expected_anonymized_image, anonymized_images[i]))
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    output_path = Path("/tmp/anonymizer_test")
+    output_path.mkdir(exist_ok=True)
+    TestAnonymizer.test_it_anonymizes_multiple_images(output_path)
+    TestAnonymizer.test_it_anonymizes_a_single_image()
