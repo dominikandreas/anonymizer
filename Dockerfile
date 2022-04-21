@@ -6,5 +6,5 @@ RUN conda install -n py3.7 cudatoolkit=9.0
 RUN conda install -n py3.7 pip
 RUN /opt/conda/envs/py3.7/bin/python -m pip install -r /tmp/requirements.txt
 
-ENV PATH=/opt/conda/envs/py3.7/bin:/opt/conda/condabin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/conda/envs/py3.7/bin:/opt/conda/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV PYTHONPATH=/anonymizer
