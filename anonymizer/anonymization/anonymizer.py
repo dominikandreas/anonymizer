@@ -12,8 +12,10 @@ def load_np_image(image_path):
     return np_image
 
 
-def save_np_image(image, image_path):
+def save_np_image(image, image_path, compression_quality=-1):
     pil_image = Image.fromarray((image).astype(np.uint8), mode='RGB')
+    if compression_quality != -1:
+        image_path = str(Path(image_path).parent / (Path(image_path).stem + ".jpg"))
     pil_image.save(image_path)
 
 
@@ -49,7 +51,8 @@ class Anonymizer:
         return [(self.obfuscator.obfuscate(image, detected_boxes), detected_boxes) 
                 for image, detected_boxes in zip(images, detected_boxes_batch)]
 
-    def anonymize_images(self, input_path, output_path, detection_thresholds, file_types, write_json):
+    def anonymize_images(self, input_path, output_path, detection_thresholds, file_types, write_json,
+                         compression_quality=-1):
         print(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
 
         output_path = Path(output_path)
@@ -81,6 +84,6 @@ class Anonymizer:
             for idx, (anonymized_image, detections) in enumerate(
                 self.anonymize_images_np(images, detection_thresholds)
             ):
-                save_np_image(image=anonymized_image, image_path=str(output_image_paths[idx]))
+                save_np_image(image=anonymized_image, image_path=str(output_image_paths[idx]), compression_quality=compression_quality)
                 if write_json:
                     save_detections(detections=detections, detections_path=str(output_detections_paths[idx]))
