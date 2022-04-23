@@ -64,8 +64,9 @@ class Anonymizer:
             files.extend(list(Path(input_path).glob(f'**/*.{file_type}')))
 
         if len(files) > self.batch_size:
-            batch_files = np.array(files[:(len(files) // self.batch_size)]).reshape(len(files) // self.batch_size, self.batch_size).tolist()
-            batch_files.append(files[(len(files) + 1 // self.batch_size):])
+            num_full_batches = len(files) // self.batch_size
+            batch_files = np.array(files[:(num_full_batches * self.batch_size)]).reshape(num_full_batches, self.batch_size).tolist()
+            batch_files.append(files[num_full_batches * self.batch_size:])
         else:
             batch_files = [files]
 
