@@ -56,7 +56,7 @@ class Anonymizer:
         print(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
 
         output_path = Path(output_path)
-        output_path.mkdir(exist_ok=True)
+        output_path.mkdir(exist_ok=True, parents=True)
         assert Path(output_path).is_dir(), 'Output path must be a directory'
 
         files = []
