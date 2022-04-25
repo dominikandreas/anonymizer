@@ -60,38 +60,28 @@ def parse_args():
                              'To make the transition from blurred areas to the non-blurred image smoother another '
                              'kernel is used which has a default size of 9. Larger values lead to a smoother '
                              'transition. Both kernel sizes must be odd numbers.')
-    parser.add_argument('--compression-quality', default=-1, required=False, 
+    parser.add_argument('--compression-quality', default=-1, required=False,
                         help='level of jpeg compression for storing resulting images. If not provided, '
-                              'images will be stored with the same filetype as the originating files and '
-                              'with the default compression level (if applicable).')
-    parser.add_argument('--reversed-processing', action='store_true', help='Process images in reverse order, useful for parallel runs on two machines')
-    parser.add_argument('--batch-size', '-b', help="maximum number of images to process inside a batch", required=False, type=int, default=8)
+                        'images will be stored with the same filetype as the originating files and '
+                        'with the default compression level (if applicable).')
+    parser.add_argument('--reversed-processing', action='store_true',
+                        help='Process images in reverse order, useful for parallel runs on two machines')
+    parser.add_argument('--batch-size', '-b', help="maximum number of images to process inside a batch",
+                        required=False, type=int, default=8)
     parser.add_argument('--debug', help="Turn on debug logging", required=False, action='store_true')
-    
+
     args = parser.parse_args()
 
-    print(f'input: {args.input}')
-    print(f'image-output: {args.image_output}')
-    print(f'weights: {args.weights}')
-    print(f'image-extensions: {args.image_extensions}')
-    print(f'face-threshold: {args.face_threshold}')
-    print(f'plate-threshold: {args.plate_threshold}')
-    print(f'write-detections: {args.write_detections}')
-    print(f'obfuscation-kernel: {args.obfuscation_kernel}')
-    print(f'compression-quality: {args.compression_quality}')
-    print(f'reversed_processing: {args.reversed_processing}')
-    print(f'batch_size: {args.batch_size}')
-    print(f'debug: {args.debug}')
-    print()
+    print("\nParsed arguments:", args)
 
     return args
 
 
 def main(input_path, image_output_path, weights_path, image_extensions, face_threshold, plate_threshold,
          write_json, obfuscation_parameters, compression_quality, reversed_processing):
-    
+
     if args.debug:
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0' 
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
 
     # import are not defined at module level since they would import tensorflow before the above os.environ changes are set
     from anonymizer.anonymization import Anonymizer
@@ -111,11 +101,11 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
         'face': face_threshold,
         'plate': plate_threshold
     }
-    anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size)
+    anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size,
+                            compression_quality=compression_quality, save_detection_json_files=write_json,
+                            reversed_processing=reversed_processing)
     anonymizer.anonymize_images(input_path=input_path, output_path=image_output_path,
-                                detection_thresholds=detection_thresholds, file_types=image_extensions.split(','),
-                                write_json=write_json, compression_quality=compression_quality,
-                                reversed_processing=reversed_processing)
+                                detection_thresholds=detection_thresholds, file_types=image_extensions.split(','))
 
 
 if __name__ == '__main__':
