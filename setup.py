@@ -16,7 +16,8 @@ setup(name='uai-anonymizer',
           'Pillow>=5.3.0',
           'requests>=2.20.0',
           'googledrivedownloader>=0.3',
-          'tqdm>=4.28.0',
+          # 'tqdm>=4.28.0',
+          'progiter~=0.1.4'
       ],
 
       dependency_links=[

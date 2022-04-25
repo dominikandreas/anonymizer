@@ -17,9 +17,8 @@ limitations under the License.
 
 import argparse
 
-from anonymizer.anonymization import Anonymizer
-from anonymizer.detection import Detector, download_weights, get_weights_path
-from anonymizer.obfuscation import Obfuscator
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # error messages only
 
 
 def parse_args():
@@ -65,6 +64,10 @@ def parse_args():
                         help='level of jpeg compression for storing resulting images. If not provided, '
                               'images will be stored with the same filetype as the originating files and '
                               'with the default compression level (if applicable).')
+    parser.add_argument('--reversed-processing', action='store_true', help='Process images in reverse order, useful for parallel runs on two machines')
+    parser.add_argument('--batch-size', '-b', help="maximum number of images to process inside a batch", required=False, type=int, default=8)
+    parser.add_argument('--debug', help="Turn on debug logging", required=False, action='store_true')
+    
     args = parser.parse_args()
 
     print(f'input: {args.input}')
@@ -76,17 +79,30 @@ def parse_args():
     print(f'write-detections: {args.write_detections}')
     print(f'obfuscation-kernel: {args.obfuscation_kernel}')
     print(f'compression-quality: {args.compression_quality}')
+    print(f'reversed_processing: {args.reversed_processing}')
+    print(f'batch_size: {args.batch_size}')
+    print(f'debug: {args.debug}')
     print()
 
     return args
 
 
 def main(input_path, image_output_path, weights_path, image_extensions, face_threshold, plate_threshold,
-         write_json, obfuscation_parameters, compression_quality):
+         write_json, obfuscation_parameters, compression_quality, reversed_processing):
+    
+    if args.debug:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0' 
+
+    # import are not defined at module level since they would import tensorflow before the above os.environ changes are set
+    from anonymizer.anonymization import Anonymizer
+    from anonymizer.detection import Detector, download_weights, get_weights_path
+    from anonymizer.obfuscation import Obfuscator
+
     download_weights(download_directory=weights_path)
 
     kernel_size, sigma, box_kernel_size = obfuscation_parameters.split(',')
     obfuscator = Obfuscator(kernel_size=int(kernel_size), sigma=float(sigma), box_kernel_size=int(box_kernel_size))
+
     detectors = {
         'face': Detector(kind='face', weights_path=get_weights_path(weights_path, kind='face')),
         'plate': Detector(kind='plate', weights_path=get_weights_path(weights_path, kind='plate'))
@@ -95,10 +111,11 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
         'face': face_threshold,
         'plate': plate_threshold
     }
-    anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors)
+    anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size)
     anonymizer.anonymize_images(input_path=input_path, output_path=image_output_path,
                                 detection_thresholds=detection_thresholds, file_types=image_extensions.split(','),
-                                write_json=write_json, compression_quality=compression_quality)
+                                write_json=write_json, compression_quality=compression_quality,
+                                reversed_processing=reversed_processing)
 
 
 if __name__ == '__main__':
@@ -107,4 +124,4 @@ if __name__ == '__main__':
          image_extensions=args.image_extensions,
          face_threshold=args.face_threshold, plate_threshold=args.plate_threshold,
          write_json=args.write_detections, obfuscation_parameters=args.obfuscation_kernel,
-         compression_quality=args.compression_quality)
+         compression_quality=args.compression_quality, reversed_processing=args.reversed_processing)

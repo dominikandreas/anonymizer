@@ -2,13 +2,11 @@ import numpy as np
 import tensorflow as tf
 
 from anonymizer.utils import Box
-
+from anonymizer.utils.helpers import get_default_session_config
 
 class Detector:
-    def __init__(self, kind, weights_path, debug_logging=False):
+    def __init__(self, kind, weights_path):
         self.kind = kind
-        if debug_logging:
-            stf.debugging.set_log_device_placement(True)
         self.detection_graph = tf.Graph()
         with self.detection_graph.as_default():
             od_graph_def = tf.GraphDef()
@@ -17,9 +15,7 @@ class Detector:
                 od_graph_def.ParseFromString(serialized_graph)
                 tf.import_graph_def(od_graph_def, name='')
 
-        conf = tf.ConfigProto()
-        conf.gpu_options.allow_growth=True
-        self.session = tf.Session(graph=self.detection_graph, config=conf)
+        self.session = tf.Session(graph=self.detection_graph, config=get_default_session_config())
 
     def _convert_boxes(self, num_boxes, scores, boxes, image_height, image_width, detection_threshold):
         assert detection_threshold >= 0.001, 'Threshold can not be too close to "0".'
