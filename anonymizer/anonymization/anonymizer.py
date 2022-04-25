@@ -29,10 +29,10 @@ def load_np_image(image_path) -> Optional[np.ndarray]:
         return None
 
 
-def save_np_image(image, image_path, compression_quality=-1):
+def save_np_image(image, image_path: str, compression_quality=-1):
     pil_image = Image.fromarray((image).astype(np.uint8), mode='RGB')
     if compression_quality != -1:
-        image_path = str(Path(image_path).parent / (Path(image_path).stem + ".jpg"))
+        image_path = str(Path(image_path).with_suffix(".jpg"))
     pil_image.save(image_path)
 
 
@@ -61,16 +61,18 @@ class QueueEntry:
 batch_queue: "multiprocessing.Queue[QueueEntry]" = multiprocessing.Queue()
 
 
-def get_next_batch(batch_size, img_path_gen, ignore_existing):
+def get_next_batch(batch_size, img_path_gen, load_processed):
     is_finished = False
     batch_data: List[Tuple[Optional[np.ndarray], Path]] = []
     while len(batch_data) < batch_size:
         try:
             img_path, output_path = next(img_path_gen)
-            img = load_np_image(img_path) if ignore_existing or not output_path.exists() else None
+            img = load_np_image(img_path) if (not output_path.exists() or load_processed) else None
             batch_data.append((img, output_path))
         except StopIteration:
             is_finished = True
+            break
+            
     
     for output_path in {p.parent for _, p in batch_data}:
         output_path.parent.mkdir(exist_ok=True, parents=True)
@@ -81,7 +83,8 @@ def filter_batch(batch_data):
     """Return a subset of the given batch data containing only consistent images (same shape or None)."""
     next_img = batch_data[0][0]
     next_batch = [(img, path) for img, path in batch_data 
-                  if (next_img is None and img is None) or (img.shape == next_img.shape)]
+                  if (next_img is None and img is None) or
+                  (img is not None and next_img is not None and img.shape == next_img.shape)]
     paths = {p for _, p in next_batch}
     remaining = [(img, output_path) for img, output_path in batch_data if output_path not in paths]
     return next_batch, remaining
@@ -126,7 +129,7 @@ class Anonymizer:
     save_detection_json_files: bool = False
     """Whether to store a json file for each image containing the detected bounding boxes."""
     
-    _image_paths_: Optional[List[Path]] = None
+    _img_paths_: Optional[List[Path]] = None
 
     def anonymize_images_np(self, images, detection_thresholds):
         assert set(self.detectors.keys()) == set(detection_thresholds.keys()),\
@@ -139,26 +142,33 @@ class Anonymizer:
         return [(self.obfuscator.obfuscate(image, detected_boxes), detected_boxes) 
                 for image, detected_boxes in zip(images, detected_boxes_batch)]
 
-    def get_next_batch(self, timeout_in_s=300) -> QueueEntry:
+    def get_next_batches(self, timeout_in_s=300):
         if self.parallel_dataloading:
             for i in range(10):
                 try:
                     # since existing images are skipped, the dataloader may take quite a while to 
-                    return batch_queue.get(timeout=timeout_in_s / 10)
+                    yield batch_queue.get(timeout=timeout_in_s / 10)
+                    return
                 except Empty:
-                    print(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s for next batch...", sys.stderr)
-            print(f"Unable to get any data within a timeout of {timeout_in_s}", sys.stderr)
-            return QueueEntry(is_stop_entry=True)
+                    print(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s for next batch...", file=sys.stderr)
+                    sys.stderr.flush()
+            print(f"Unable to get any data within a timeout of {timeout_in_s}", file=sys.stderr)
+            sys.stderr.flush()
+            yield QueueEntry(is_stop_entry=True)
         else:
-            batch_data, is_finished = get_next_batch(self.batch_size, self.data_iter, ignore_existing=not self.overwrite_existing)
-            next_batch, batch_data = filter_batch(batch_data)
-            images, paths = zip(*next_batch)
-            return QueueEntry(image_data=images, output_paths=paths, is_stop_entry=is_finished)
+            batch_data, is_finished = get_next_batch(self.batch_size, self.data_iter, load_processed=self.overwrite_existing)
+            while len(batch_data) > 0:
+                next_batch, batch_data = filter_batch(batch_data)
+                images, paths = zip(*next_batch)
+                yield QueueEntry(image_data=images, output_paths=paths, is_stop_entry=is_finished)
         
     def prepare_dataloading(self, img_paths: List[Path], input_path, output_path):
         input_output_paths = [(img_path, output_path / img_path.relative_to(input_path))
                               for img_path in (reversed(img_paths) if self.reversed_processing else img_paths)]
         
+        if self.compression_quality != -1:
+            input_output_paths = [(img, path.with_suffix(".jpg")) for img, path in input_output_paths]
+            
         self.data_iter = iter(input_output_paths)
         
         if self.parallel_dataloading:
@@ -166,7 +176,7 @@ class Anonymizer:
             self.dataloader = multiprocessing.Process(
                 target=dataloader, daemon=True,
                 kwargs=dict(batch_size=self.batch_size, input_output_path_iterator=self.data_iter,
-                            ignore_existing=not self.overwrite_existing)
+                            ignore_existing=self.overwrite_existing)
             )
             atexit.register(lambda: self.dataloader.terminate())
             self.dataloader.start()
@@ -178,44 +188,45 @@ class Anonymizer:
         output_path.mkdir(exist_ok=True, parents=True)
         assert output_path.is_dir(), 'Output path must be a directory'
 
-        self._img_paths_ = []
-        print("Gathering input image paths... ", end="")
-        for file_type in file_types:
-            self._img_paths_.extend(list(Path(input_path).glob(f'**/*.{file_type}')))
+        if self._img_paths_ is None:
+            self._img_paths_ = []
+            print("Gathering input image paths... ", end="", file=sys.stderr)
+            for file_type in file_types:
+                self._img_paths_.extend(list(Path(input_path).glob(f'**/*.{file_type}')))
 
-        print("Done. ")
+        print("Done. ", file=sys.stderr)
         self.prepare_dataloading(self._img_paths_, input_path, output_path)        
 
+
+    def process_batch(self, batch, detection_thresholds):
+        output_detections_paths = [output_path.with_suffix('.json') for output_path in  batch.output_paths]
+
+        if batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
+            # Anonymize image
+            anonymized_images_detections = self.anonymize_images_np(batch.image_data, detection_thresholds)
+            
+            for idx, (anonymized_image, detections) in enumerate(anonymized_images_detections):
+                
+                save_np_image(image=anonymized_image, image_path=str(batch.output_paths[idx]), 
+                            compression_quality=self.compression_quality)
+                
+                if self.save_detection_json_files:
+                    save_detections(detections=detections, detections_path=str(output_detections_paths[idx]))
+                    
     def anonymize_images(self, input_path, output_path, detection_thresholds, file_types):
         self.prepare_anonymization(input_path, file_types, output_path)
 
         # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm apparently isn't threadsafe)
-        progress_iter = iter(ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1])))
+        progress_iter = iter(ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr))
         while True:
-            next_batch = self.get_next_batch()
-            if next_batch.is_stop_entry or len(next_batch.image_data) == 0:
-                print("\nfinished", "/".join(self._img_paths_[0].parts[-4:-1]))
-                break
+            for next_batch in self.get_next_batches():
+                if next_batch.is_stop_entry or len(next_batch.image_data) == 0:
+                    print("\nfinished", "/".join(self._img_paths_[0].parts[-4:-1]), file=sys.stderr)
+                    return
+                    
+                self.process_batch(next_batch, detection_thresholds)
+                        
+                for _ in range(len(next_batch.output_paths)):
+                    next(progress_iter, None)
                 
-            output_detections_paths = [output_path.with_suffix('.json') for output_path in  next_batch.output_paths]
-
-            if next_batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
-                # Anonymize image
-                anonymized_images_detections = self.anonymize_images_np(next_batch.image_data, detection_thresholds)
-                
-                for idx, (anonymized_image, detections) in enumerate(anonymized_images_detections):
-                    
-                    save_np_image(image=anonymized_image, image_path=str(next_batch.output_paths[idx]), 
-                                  compression_quality=self.compression_quality)
-                    
-                    if self.save_detection_json_files:
-                        save_detections(detections=detections, detections_path=str(output_detections_paths[idx]))
-                    
-            for _ in range(len(next_batch.output_paths)):
-                next(progress_iter, None)
-            sys.stdout.flush()
-            sys.stderr.flush()
-        
-        self.dataloader.terminate()
-        sys.stdout.flush()
-        sys.stderr.flush()
+                sys.stderr.flush()
