@@ -103,7 +103,7 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
     }
     anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size,
                             compression_quality=compression_quality, save_detection_json_files=write_json,
-                            reversed_processing=reversed_processing)
+                            reversed_processing=reversed_processing, parallel_dataloading=True)
     anonymizer.anonymize_images(input_path=input_path, output_path=image_output_path,
                                 detection_thresholds=detection_thresholds, file_types=image_extensions.split(','))
 

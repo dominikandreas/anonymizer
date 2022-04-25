@@ -5,15 +5,17 @@ from queue import Empty
 import time
 from pathlib import Path
 import multiprocessing
-from typing import List, Tuple, Optional, Iterator
+from typing import List, Tuple, Optional, Iterator, TYPE_CHECKING
 from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
 from progiter import ProgIter
-from anonymizer.detection.detector import Detector
 
-from anonymizer.obfuscation.obfuscator import Obfuscator
+
+if TYPE_CHECKING:
+    from anonymizer.detection.detector import Detector
+    from anonymizer.obfuscation.obfuscator import Obfuscator
 
 
 def load_np_image(image_path) -> Optional[np.ndarray]:
@@ -85,9 +87,7 @@ def filter_batch(batch_data):
     return next_batch, remaining
     
     
-def dataloader(batch_size: int,  input_output_paths: Iterator[Tuple[Path, Path]], ignore_existing=True):
-    input_output_path_iterator = iter(input_output_paths)
-    
+def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path, Path]], ignore_existing=True):
     is_finished = False
     # load batches of images until the iterator has no remaining elements
     while True:
@@ -108,9 +108,9 @@ def dataloader(batch_size: int,  input_output_paths: Iterator[Tuple[Path, Path]]
 
 @dataclass
 class Anonymizer:
-    detectors: List[Detector]
+    detectors: List["Detector"]
     """Detectors to apply."""
-    obfuscator: List[Obfuscator]
+    obfuscator: List["Obfuscator"]
     """Obfuscators to apply (for blurring detection regions)."""
     
     batch_size: int = 8
@@ -189,7 +189,7 @@ class Anonymizer:
     def anonymize_images(self, input_path, output_path, detection_thresholds, file_types):
         self.prepare_anonymization(input_path, file_types, output_path)
 
-        # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm isn't threadsafe?)
+        # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm apparently isn't threadsafe)
         progress_iter = iter(ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1])))
         while True:
             next_batch = self.get_next_batch()
