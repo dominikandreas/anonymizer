@@ -128,7 +128,7 @@ class Anonymizer:
     
     batch_size: int = 8
     """Number of images to process in a single forward pass (increases GPU memory consuption)."""
-    parallel_dataloading: bool = False
+    parallel_dataloading: bool = True
     """Whether to start a parallel process for dataloading."""
     reversed_processing: bool = False
     """Whether to process images in reverse."""
