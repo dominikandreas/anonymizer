@@ -14,10 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-
+import logging
 import argparse
-
+import socket
 import os
+from pathlib import Path
+
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # error messages only
 
 
@@ -68,11 +71,15 @@ def parse_args():
                         help='Process images in reverse order, useful for parallel runs on two machines')
     parser.add_argument('--batch-size', '-b', help="maximum number of images to process inside a batch",
                         required=False, type=int, default=8)
+    parser.add_argument('--gpu-memory-limit', help="Limit (in percent) of memory to be used per GPU, e.g. 50", 
+                        type=int, default=100)
+    parser.add_argument('--logfile', help="File where to log messages (opened in append mode)",
+                        default=f"/tmp/anonymizer_logs/{socket.gethostname()}.{os.getpid()}.log")
     parser.add_argument('--debug', help="Turn on debug logging", required=False, action='store_true')
 
     args = parser.parse_args()
 
-    print("\nParsed arguments:", args)
+    setup_logging(Path(args.logfile))
 
     return args
 
@@ -82,8 +89,9 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
 
     if args.debug:
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
+        os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
-    # import are not defined at module level since they would import tensorflow before the above os.environ changes are set
+    # above environment configuration needs to be set before imports, therefore not defined at module level
     from anonymizer.anonymization import Anonymizer
     from anonymizer.detection import Detector, download_weights, get_weights_path
     from anonymizer.obfuscation import Obfuscator
@@ -94,8 +102,10 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
     obfuscator = Obfuscator(kernel_size=int(kernel_size), sigma=float(sigma), box_kernel_size=int(box_kernel_size))
 
     detectors = {
-        'face': Detector(kind='face', weights_path=get_weights_path(weights_path, kind='face')),
-        'plate': Detector(kind='plate', weights_path=get_weights_path(weights_path, kind='plate'))
+        'face': Detector(kind='face', weights_path=get_weights_path(weights_path, kind='face'),
+                         gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None),
+        'plate': Detector(kind='plate', weights_path=get_weights_path(weights_path, kind='plate'),
+                          gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None)
     }
     detection_thresholds = {
         'face': face_threshold,
@@ -106,6 +116,17 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
                             reversed_processing=reversed_processing, parallel_dataloading=True)
     anonymizer.anonymize_images(input_path=input_path, output_path=image_output_path,
                                 detection_thresholds=detection_thresholds, file_types=image_extensions.split(','))
+
+
+def setup_logging(logfile):
+    print(f"Logging to {logfile}")
+    if not logfile.parent.exists():
+        logfile.parent.mkdir(parents=True)
+        os.system(f"chmod -R 0777 {logfile.parent}")
+    
+    logging.basicConfig(filename=logfile, filemode='a',
+                        format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                        datefmt='%H:%M:%S', level=logging.INFO)
 
 
 if __name__ == '__main__':

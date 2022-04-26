@@ -1,6 +1,8 @@
+import os
 import sys
 import json
 import atexit
+import logging
 from queue import Empty
 import time
 from pathlib import Path
@@ -63,7 +65,8 @@ batch_queue: "multiprocessing.Queue[QueueEntry]" = multiprocessing.Queue()
 
 def get_next_batch(batch_size, img_path_gen, load_processed):
     is_finished = False
-    batch_data: List[Tuple[Optional[np.ndarray], Path]] = []
+     # contains tuples of images and target output path. images are only loaded conditionally and may be None
+    batch_data: List[Tuple[Optional[np.ndarray], Path]] = [] 
     while len(batch_data) < batch_size:
         try:
             img_path, output_path = next(img_path_gen)
@@ -90,24 +93,31 @@ def filter_batch(batch_data):
     return next_batch, remaining
     
     
-def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path, Path]], ignore_existing=True):
-    is_finished = False
-    # load batches of images until the iterator has no remaining elements
+def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path, Path]], 
+               ignore_existing=True, loop_until_complete=True):
+    """Load batches of images and put them into the queue until the iterator has no remaining elements."""
+    
     while True:
         batch_data, is_finished = get_next_batch(batch_size, input_output_path_iterator, ignore_existing)
         
-        # gather images of the same shape, as images of variying shapes cannot be inside the same batch
+        # Gather images of the same shape, as images of variying shapes cannot be inside the same batch
         while len(batch_data) > 0:
             next_batch, batch_data = filter_batch(batch_data)
             images, paths = zip(*next_batch)
             batch_queue.put(QueueEntry(image_data=images, output_paths=paths))
+            
         if is_finished:
-             break
+            batch_queue.put(QueueEntry(is_stop_entry=True))
+            return
          
-        while batch_queue.qsize() > 2:
-            time.sleep(.2)
-    
-    batch_queue.put(QueueEntry(is_stop_entry=True))
+        if not loop_until_complete:
+            return
+        else:
+            # Wait until previous batches have been consumed before loading further images
+            while batch_queue.qsize() > 2:
+                time.sleep(.01)
+        
+   
 
 @dataclass
 class Anonymizer:
@@ -142,31 +152,29 @@ class Anonymizer:
         return [(self.obfuscator.obfuscate(image, detected_boxes), detected_boxes) 
                 for image, detected_boxes in zip(images, detected_boxes_batch)]
 
-    def get_next_batches(self, timeout_in_s=300):
-        if self.parallel_dataloading:
-            for i in range(10):
-                try:
-                    # since existing images are skipped, the dataloader may take quite a while to 
-                    yield batch_queue.get(timeout=timeout_in_s / 10)
-                    return
-                except Empty:
-                    print(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s for next batch...", file=sys.stderr)
-                    sys.stderr.flush()
-            print(f"Unable to get any data within a timeout of {timeout_in_s}", file=sys.stderr)
-            sys.stderr.flush()
-            yield QueueEntry(is_stop_entry=True)
-        else:
-            batch_data, is_finished = get_next_batch(self.batch_size, self.data_iter, load_processed=self.overwrite_existing)
-            while len(batch_data) > 0:
-                next_batch, batch_data = filter_batch(batch_data)
-                images, paths = zip(*next_batch)
-                yield QueueEntry(image_data=images, output_paths=paths, is_stop_entry=is_finished)
-        
+    def get_next_batch(self, timeout_in_s=300) -> QueueEntry:
+        if not self.parallel_dataloading:
+            # Manually generate the next element in the queue
+            dataloader(batch_size=self.batch_size, input_output_path_iterator=self.data_iter,
+                       ignore_existing=self.overwrite_existing)
+        for i in range(10):
+            try:
+                return batch_queue.get(timeout=timeout_in_s / 10)
+            except Empty:
+                print(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s "
+                        "for next batch...", file=sys.stderr)
+                sys.stderr.flush()
+        print(f"Unable to get any data within a timeout of {timeout_in_s}", file=sys.stderr)
+        sys.stderr.flush()
+        return QueueEntry(is_stop_entry=True)
+
+            
     def prepare_dataloading(self, img_paths: List[Path], input_path, output_path):
         input_output_paths = [(img_path, output_path / img_path.relative_to(input_path))
                               for img_path in (reversed(img_paths) if self.reversed_processing else img_paths)]
         
         if self.compression_quality != -1:
+            # Set output file type to jpg if compression is active
             input_output_paths = [(img, path.with_suffix(".jpg")) for img, path in input_output_paths]
             
         self.data_iter = iter(input_output_paths)
@@ -191,6 +199,7 @@ class Anonymizer:
         if self._img_paths_ is None:
             self._img_paths_ = []
             print("Gathering input image paths... ", end="", file=sys.stderr)
+            sys.stderr.flush()
             for file_type in file_types:
                 self._img_paths_.extend(list(Path(input_path).glob(f'**/*.{file_type}')))
 
@@ -217,16 +226,29 @@ class Anonymizer:
         self.prepare_anonymization(input_path, file_types, output_path)
 
         # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm apparently isn't threadsafe)
-        progress_iter = iter(ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr))
+        progress = ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr)
+        last_percent = -1
+        progress_iter = iter(progress)
         while True:
-            for next_batch in self.get_next_batches():
+            try:
+                next_batch = self.get_next_batch()
                 if next_batch.is_stop_entry or len(next_batch.image_data) == 0:
                     print("\nfinished", "/".join(self._img_paths_[0].parts[-4:-1]), file=sys.stderr)
                     return
                     
                 self.process_batch(next_batch, detection_thresholds)
                         
+                # Iterate over the progress iterator to log the progress
                 for _ in range(len(next_batch.output_paths)):
                     next(progress_iter, None)
                 
                 sys.stderr.flush()
+                
+                percent = int(progress._now_idx / progress.total * 100)
+                if percent != last_percent:
+                    logging.info(progress.format_message())
+                
+            except Exception as e:
+                logging.exception(str(e))
+                exit(-1)
+            

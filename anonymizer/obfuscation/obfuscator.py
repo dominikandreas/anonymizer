@@ -42,7 +42,9 @@ class Obfuscator:
         # self._visualize_kernel(kernel=self.mean_kernel[..., 0])
 
         # wrap everything in a tf session which is always open
-        sess = tf.Session(config=get_default_session_config())
+        config = get_default_session_config(device_count = {'GPU': 0})
+
+        sess = tf.Session(config=config)
         self._build_graph()
         init_op = tf.global_variables_initializer()
         sess.run(init_op)
