@@ -3,6 +3,7 @@ import sys
 import json
 import atexit
 import logging
+import random
 from queue import Empty
 import time
 from pathlib import Path
@@ -70,6 +71,11 @@ def get_next_batch(batch_size, img_path_gen, load_processed):
     while len(batch_data) < batch_size:
         try:
             img_path, output_path = next(img_path_gen)
+            if not img_path.exists():
+                logging.warning(f"input path {img_path} does not exist!")
+            if output_path.exists():
+                logging.info(f"output for {output_path.name} already exists, skipping")
+            
             img = load_np_image(img_path) if (not output_path.exists() or load_processed) else None
             batch_data.append((img, output_path))
         except StopIteration:
@@ -89,6 +95,7 @@ def filter_batch(batch_data):
                   if (next_img is None and img is None) or
                   (img is not None and next_img is not None and img.shape == next_img.shape)]
     paths = {p for _, p in next_batch}
+    
     remaining = [(img, output_path) for img, output_path in batch_data if output_path not in paths]
     return next_batch, remaining
     
@@ -132,6 +139,8 @@ class Anonymizer:
     """Whether to start a parallel process for dataloading."""
     reversed_processing: bool = False
     """Whether to process images in reverse."""
+    shuffle: bool = False
+    """Whether to process images in random order."""
     overwrite_existing: bool = False
     """Whether to process input images where the output already exists."""
     compression_quality: int = -1
@@ -177,6 +186,9 @@ class Anonymizer:
             # Set output file type to jpg if compression is active
             input_output_paths = [(img, path.with_suffix(".jpg")) for img, path in input_output_paths]
             
+        if self.shuffle:
+            random.shuffle(input_output_paths)  # random.shuffle is an inplace operation
+            
         self.data_iter = iter(input_output_paths)
         
         if self.parallel_dataloading:
@@ -189,7 +201,7 @@ class Anonymizer:
             atexit.register(lambda: self.dataloader.terminate())
             self.dataloader.start()
               
-    def prepare_anonymization(self, input_path, file_types, output_path):
+    def prepare_anonymization(self, input_path, file_types, output_path, start=0, stop=None, step=1):
         print(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
 
         output_path = Path(output_path)
@@ -201,7 +213,10 @@ class Anonymizer:
             print("Gathering input image paths... ", end="", file=sys.stderr)
             sys.stderr.flush()
             for file_type in file_types:
-                self._img_paths_.extend(list(Path(input_path).glob(f'**/*.{file_type}')))
+                matches = sorted(Path(input_path).glob(f'**/*.{file_type}'))
+                self._img_paths_.extend(matches[slice(start, stop, step)])
+        else:
+            self._img_paths_ = self._img_paths_[slice(start, stop, step)]
 
         print("Done. ", file=sys.stderr)
         self.prepare_dataloading(self._img_paths_, input_path, output_path)        
@@ -222,9 +237,8 @@ class Anonymizer:
                 if self.save_detection_json_files:
                     save_detections(detections=detections, detections_path=str(output_detections_paths[idx]))
                     
-    def anonymize_images(self, input_path, output_path, detection_thresholds, file_types):
-        self.prepare_anonymization(input_path, file_types, output_path)
-
+    def anonymize_images(self, input_path, output_path, detection_thresholds, file_types, start=0, stop=None, step=1):
+        self.prepare_anonymization(input_path, file_types, output_path, start, stop, step)
         # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm apparently isn't threadsafe)
         progress = ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr)
         last_percent = -1
@@ -242,10 +256,9 @@ class Anonymizer:
                 for _ in range(len(next_batch.output_paths)):
                     next(progress_iter, None)
                 
-                sys.stderr.flush()
-                
                 percent = int(progress._now_idx / progress.total * 100)
                 if percent != last_percent:
+                    last_percent = percent
                     logging.info(progress.format_message())
                 
             except Exception as e:

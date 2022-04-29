@@ -35,6 +35,13 @@ def parse_args():
                         metavar='/path/to/output_foler',
                         help='Path to the folder the anonymized images should be written to. '
                              'Will mirror the folder structure of the input folder.')
+    
+    parser.add_argument('--start', help="Index to position in the list of images where to start processing.", 
+                        default=0, type=int)
+    parser.add_argument('--stop', help="Index to position in the list of images where to stop processing (exclusive index)", 
+                        default=None, type=int)
+    parser.add_argument('--step', help="Step size to apply to image processing to only process every nth image.", 
+                        default=1, type=int)
     parser.add_argument('--weights', required=True,
                         metavar='/path/to/weights_foler',
                         help='Path to the folder where the weights are stored. If no weights with the '
@@ -69,6 +76,7 @@ def parse_args():
                         'with the default compression level (if applicable).')
     parser.add_argument('--reversed-processing', action='store_true',
                         help='Process images in reverse order, useful for parallel runs on two machines')
+    parser.add_argument('--shuffle', help="Process images in random order.", action='store_true')
     parser.add_argument('--batch-size', '-b', help="maximum number of images to process inside a batch",
                         required=False, type=int, default=8)
     parser.add_argument('--gpu-memory-limit', help="Limit (in percent) of memory to be used per GPU, e.g. 50", 
@@ -84,8 +92,8 @@ def parse_args():
     return args
 
 
-def main(input_path, image_output_path, weights_path, image_extensions, face_threshold, plate_threshold,
-         write_json, obfuscation_parameters, compression_quality, reversed_processing):
+def main():
+    args = parse_args()
 
     if args.debug:
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
@@ -96,26 +104,26 @@ def main(input_path, image_output_path, weights_path, image_extensions, face_thr
     from anonymizer.detection import Detector, download_weights, get_weights_path
     from anonymizer.obfuscation import Obfuscator
 
-    download_weights(download_directory=weights_path)
+    download_weights(download_directory=args.weights)
 
-    kernel_size, sigma, box_kernel_size = obfuscation_parameters.split(',')
+    kernel_size, sigma, box_kernel_size = args.obfuscation_kernel.split(',')
     obfuscator = Obfuscator(kernel_size=int(kernel_size), sigma=float(sigma), box_kernel_size=int(box_kernel_size))
 
     detectors = {
-        'face': Detector(kind='face', weights_path=get_weights_path(weights_path, kind='face'),
+        'face': Detector(kind='face', weights_path=get_weights_path(args.weights, kind='face'),
                          gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None),
-        'plate': Detector(kind='plate', weights_path=get_weights_path(weights_path, kind='plate'),
+        'plate': Detector(kind='plate', weights_path=get_weights_path(args.weights, kind='plate'),
                           gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None)
     }
     detection_thresholds = {
-        'face': face_threshold,
-        'plate': plate_threshold
+        'face': args.face_threshold,
+        'plate': args.plate_threshold
     }
     anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size,
-                            compression_quality=compression_quality, save_detection_json_files=write_json,
-                            reversed_processing=reversed_processing, parallel_dataloading=True)
-    anonymizer.anonymize_images(input_path=input_path, output_path=image_output_path,
-                                detection_thresholds=detection_thresholds, file_types=image_extensions.split(','))
+                            compression_quality=args.compression_quality, save_detection_json_files=args.write_detections,
+                            reversed_processing=args.reversed_processing, parallel_dataloading=True, shuffle=args.shuffle)
+    anonymizer.anonymize_images(input_path=args.input, output_path=args.image_output, start=args.start, stop=args.stop, step=args.step,
+                                detection_thresholds=detection_thresholds, file_types=args.image_extensions.split(','))
 
 
 def setup_logging(logfile):
@@ -130,9 +138,4 @@ def setup_logging(logfile):
 
 
 if __name__ == '__main__':
-    args = parse_args()
-    main(input_path=args.input, image_output_path=args.image_output, weights_path=args.weights,
-         image_extensions=args.image_extensions,
-         face_threshold=args.face_threshold, plate_threshold=args.plate_threshold,
-         write_json=args.write_detections, obfuscation_parameters=args.obfuscation_kernel,
-         compression_quality=args.compression_quality, reversed_processing=args.reversed_processing)
+    main()

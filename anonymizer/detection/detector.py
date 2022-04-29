@@ -15,7 +15,8 @@ class Detector:
                 od_graph_def.ParseFromString(serialized_graph)
                 tf.import_graph_def(od_graph_def, name='')
 
-        self.session = tf.Session(graph=self.detection_graph, config=get_default_session_config(gpu_memory_fraction))
+        self.session = tf.Session(graph=self.detection_graph, 
+                                  config=get_default_session_config(gpu_memory_fraction))
 
     def _convert_boxes(self, num_boxes, scores, boxes, image_height, image_width, detection_threshold):
         assert detection_threshold >= 0.001, 'Threshold can not be too close to "0".'
