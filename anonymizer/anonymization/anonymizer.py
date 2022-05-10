@@ -8,7 +8,7 @@ from queue import Empty
 import time
 from pathlib import Path
 import multiprocessing
-from typing import List, Tuple, Optional, Iterator, TYPE_CHECKING
+from typing import List, Tuple, Optional, Iterator, TYPE_CHECKING, Dict
 from dataclasses import dataclass
 
 import numpy as np
@@ -59,9 +59,27 @@ class QueueEntry:
     is_stop_entry: bool = False
     image_data: Optional[np.ndarray] = None
     output_paths: Optional[List[Path]] = None
+    
+    
+@dataclass
+class OutputJob:
+    is_stop_entry: bool = False
+    image_data: Optional[np.ndarray] = None
+    output_path: Optional[Path] = None
+    compression_quality: Optional[int] = None
+    detections: Optional[Dict] = None
+    
+    def execute(self):
+        if self.is_stop_entry:
+            return
+        save_np_image(self.image_data, self.output_path, self.compression_quality)
+        if self.detections:
+            save_detections(detections=self.detections, detections_path=self.output_path.with_suffix('.json'))
+    
 
 
 batch_queue: "multiprocessing.Queue[QueueEntry]" = multiprocessing.Queue()
+output_queue: "multiprocessing.Queue[OutputJob]" = multiprocessing.Queue(maxsize=128)
 
 
 def get_next_batch(batch_size, img_path_gen, load_processed):
@@ -124,6 +142,16 @@ def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path
             while batch_queue.qsize() > 2:
                 time.sleep(.01)
         
+
+def datawriter():
+    while True:
+        try:
+            output_job = output_queue.get()
+            output_job.execute()
+                
+        except Exception as e:
+            logging.exception(f"Exception occurred in data writer: {str(e)}")
+
 
 @dataclass
 class Anonymizer:
@@ -199,6 +227,10 @@ class Anonymizer:
             )
             atexit.register(lambda: self.dataloader.terminate())
             self.dataloader.start()
+            
+        self.datawriter = multiprocessing.Process(target=datawriter, daemon=True)
+        self.datawriter.start()
+        
               
     def prepare_anonymization(self, input_path, file_types, output_path, start=0, stop=None, step=1):
         print(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
@@ -222,20 +254,22 @@ class Anonymizer:
 
 
     def process_batch(self, batch, detection_thresholds):
-        output_detections_paths = [output_path.with_suffix('.json') for output_path in batch.output_paths]
-
         if batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
             # Anonymize image
             anonymized_images_detections = self.anonymize_images_np(batch.image_data, detection_thresholds)
             
             for idx, (anonymized_image, detections) in enumerate(anonymized_images_detections):
                 
-                save_np_image(image=anonymized_image, image_path=str(batch.output_paths[idx]), 
-                            compression_quality=self.compression_quality)
-                
+                job = OutputJob(image_data=anonymized_image, output_path=str(batch.output_paths[idx]),
+                                       compression_quality=self.compression_quality)
                 if self.save_detection_json_files:
-                    save_detections(detections=detections, detections_path=str(output_detections_paths[idx]))
+                    job.detections = detections
                     
+                output_queue.put(job)
+                
+        output_queue.put(OutputJob(is_stop_entry=True))
+
+
     def anonymize_images(self, input_path, output_path, detection_thresholds, file_types, start=0, stop=None, step=1):
         self.prepare_anonymization(input_path, file_types, output_path, start, stop, step)
         if len(self._img_paths_) == 0:
@@ -262,6 +296,10 @@ class Anonymizer:
                 if percent != last_percent:
                     last_percent = percent
                     logging.info(progress.format_message())
+                    
+                while output_queue.qsize():
+                    logging.info(f"Waiting for images to be written: {output_queue.qsize()}")
+                    time.sleep(1)
                 
             except Exception as e:
                 logging.exception(str(e))
