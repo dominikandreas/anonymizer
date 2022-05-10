@@ -74,7 +74,7 @@ def get_next_batch(batch_size, img_path_gen, load_processed):
             if not img_path.exists():
                 logging.warning(f"input path {img_path} does not exist!")
             if output_path.exists():
-                logging.info(f"output for {output_path.name} already exists, skipping")
+                logging.debug(f"output for {output_path.name} already exists, skipping")
             
             img = load_np_image(img_path) if (not output_path.exists() or load_processed) else None
             batch_data.append((img, output_path))
@@ -124,7 +124,6 @@ def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path
             while batch_queue.qsize() > 2:
                 time.sleep(.01)
         
-   
 
 @dataclass
 class Anonymizer:
@@ -223,7 +222,7 @@ class Anonymizer:
 
 
     def process_batch(self, batch, detection_thresholds):
-        output_detections_paths = [output_path.with_suffix('.json') for output_path in  batch.output_paths]
+        output_detections_paths = [output_path.with_suffix('.json') for output_path in batch.output_paths]
 
         if batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
             # Anonymize image
@@ -239,6 +238,9 @@ class Anonymizer:
                     
     def anonymize_images(self, input_path, output_path, detection_thresholds, file_types, start=0, stop=None, step=1):
         self.prepare_anonymization(input_path, file_types, output_path, start, stop, step)
+        if len(self._img_paths_) == 0:
+            logging.info("No images to process")
+            return 
         # use progiter instead of tqdm since it plays nicer with multiprocessing (tqdm apparently isn't threadsafe)
         progress = ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr)
         last_percent = -1
