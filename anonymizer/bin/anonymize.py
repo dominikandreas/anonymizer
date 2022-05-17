@@ -131,9 +131,11 @@ def setup_logging(logfile):
     if not logfile.parent.exists():
         logfile.parent.mkdir(parents=True)
         os.system(f"chmod -R 0777 {logfile.parent}")
+        
+    pid = os.getpid()
     
     logging.basicConfig(filename=logfile, filemode='a',
-                        format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                        format=f'%(asctime)s %(levelname)s {pid}: %(message)s',
                         datefmt='%H:%M:%S', level=logging.INFO)
 
 

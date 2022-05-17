@@ -28,7 +28,7 @@ def load_np_image(image_path) -> Optional[np.ndarray]:
         return np_image
         
     except Exception as e:
-        print(f"Exception occurred while trying to load image {image_path}: {e}", file=sys.stderr)
+        logging.info(f"Exception occurred while trying to load image {image_path}: {e}", file=sys.stderr)
         return None
 
 
@@ -197,10 +197,10 @@ class Anonymizer:
             try:
                 return batch_queue.get(timeout=timeout_in_s / 10)
             except Empty:
-                print(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s "
+                logging.info(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s "
                         "for next batch...", file=sys.stderr)
                 sys.stderr.flush()
-        print(f"Unable to get any data within a timeout of {timeout_in_s}", file=sys.stderr)
+        logging.info(f"Unable to get any data within a timeout of {timeout_in_s}", file=sys.stderr)
         sys.stderr.flush()
         return QueueEntry(is_stop_entry=True)
 
@@ -219,7 +219,7 @@ class Anonymizer:
         self.data_iter = iter(input_output_paths)
         
         if self.parallel_dataloading:
-            print("Starting data worker")
+            logging.info("Starting data worker")
             self.dataloader = multiprocessing.Process(
                 target=dataloader, daemon=True,
                 kwargs=dict(batch_size=self.batch_size, input_output_path_iterator=self.data_iter,
@@ -233,7 +233,7 @@ class Anonymizer:
         
               
     def prepare_anonymization(self, input_path, file_types, output_path, start=0, stop=None, step=1):
-        print(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
+        logging.info(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
 
         output_path = Path(output_path)
         output_path.mkdir(exist_ok=True, parents=True)
@@ -241,7 +241,7 @@ class Anonymizer:
 
         if self._img_paths_ is None:
             self._img_paths_ = []
-            print("Gathering input image paths... ", end="", file=sys.stderr)
+            logging.info("Gathering input image paths... ")
             sys.stderr.flush()
             for file_type in file_types:
                 matches = sorted(Path(input_path).glob(f'**/*.{file_type}'))
@@ -249,19 +249,19 @@ class Anonymizer:
         else:
             self._img_paths_ = self._img_paths_[slice(start, stop, step)]
 
-        print("Done. ", file=sys.stderr)
+        logging.info("Done. ")
         self.prepare_dataloading(self._img_paths_, input_path, output_path)        
 
 
     def process_batch(self, batch, detection_thresholds):
-        if batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
+        if batch.image_data is not None and batch.image_data[0] is not None:  # image data is set to None for batches that don't require processing
             # Anonymize image
             anonymized_images_detections = self.anonymize_images_np(batch.image_data, detection_thresholds)
             
             for idx, (anonymized_image, detections) in enumerate(anonymized_images_detections):
                 
-                job = OutputJob(image_data=anonymized_image, output_path=str(batch.output_paths[idx]),
-                                       compression_quality=self.compression_quality)
+                job = OutputJob(image_data=anonymized_image, output_path=batch.output_paths[idx],
+                                compression_quality=self.compression_quality)
                 if self.save_detection_json_files:
                     job.detections = detections
                     
@@ -279,29 +279,29 @@ class Anonymizer:
         progress = ProgIter(self._img_paths_, desc="/".join(self._img_paths_[0].parts[-4:-1]), stream=sys.stderr)
         last_percent = -1
         progress_iter = iter(progress)
-        while True:
-            try:
+        try:
+            while True:
                 next_batch = self.get_next_batch()
-                if next_batch.is_stop_entry or len(next_batch.image_data) == 0:
-                    print("\nfinished", "/".join(self._img_paths_[0].parts[-4:-1]), file=sys.stderr)
-                    return
                     
                 self.process_batch(next_batch, detection_thresholds)
                         
                 # Iterate over the progress iterator to log the progress
-                for _ in range(len(next_batch.output_paths)):
+                for _ in range(len(next_batch.output_paths or [])):
                     next(progress_iter, None)
                 
-                percent = int(progress._now_idx / progress.total * 100)
+                percent = int((progress._now_idx + 1) / progress.total * 100)
                 if percent != last_percent:
                     last_percent = percent
-                    logging.info(progress.format_message())
                     
-                while output_queue.qsize():
-                    logging.info(f"Waiting for images to be written: {output_queue.qsize()}")
-                    time.sleep(1)
-                
-            except Exception as e:
-                logging.exception(str(e))
-                exit(-1)
+                if next_batch.is_stop_entry:
+                    for _ in progress_iter:  # finalize the progress log
+                        pass
+                    logging.info(progress.format_message())
+                    logging.info("\nfinished" + "/".join(self._img_paths_[0].parts[-4:-1]))
+                    break
+                    
+        finally:
+            while output_queue.qsize() > 0:
+                logging.info(f"Waiting for images to be written: {output_queue.qsize()}")
+                time.sleep(1)
             
