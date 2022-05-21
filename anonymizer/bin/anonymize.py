@@ -18,11 +18,26 @@ import logging
 import argparse
 import socket
 import os
+import sys
 from pathlib import Path
 
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # error messages only
 
+
+def setup_logging(logfile, level=logging.INFO):
+    print(f"Logging to {logfile}")
+    if not logfile.parent.exists():
+        logfile.parent.mkdir(parents=True)
+        os.system(f"chmod -R 0777 {logfile.parent}")
+        
+    pid = os.getpid()
+    
+    logging.basicConfig(filename=logfile, filemode='a',
+                        format=f'%(asctime)s %(levelname)s {pid}: %(message)s',
+                        datefmt='%H:%M:%S', level=level)
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -87,7 +102,7 @@ def parse_args():
 
     args = parser.parse_args()
 
-    setup_logging(Path(args.logfile))
+    setup_logging(Path(args.logfile), level=logging.DEBUG if args.debug else logging.INFO)
 
     return args
 
@@ -95,49 +110,40 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.debug:
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
-        os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+    try:
+        if args.debug:
+            os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
+            os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
-    # above environment configuration needs to be set before imports, therefore not defined at module level
-    from anonymizer.anonymization import Anonymizer
-    from anonymizer.detection import Detector, download_weights, get_weights_path
-    from anonymizer.obfuscation import Obfuscator
+        # above environment configuration needs to be set before imports, therefore not defined at module level
+        from anonymizer.anonymization import Anonymizer
+        from anonymizer.detection import Detector, download_weights, get_weights_path
+        from anonymizer.obfuscation import Obfuscator
 
-    download_weights(download_directory=args.weights)
+        download_weights(download_directory=args.weights)
 
-    kernel_size, sigma, box_kernel_size = args.obfuscation_kernel.split(',')
-    obfuscator = Obfuscator(kernel_size=int(kernel_size), sigma=float(sigma), box_kernel_size=int(box_kernel_size))
+        kernel_size, sigma, box_kernel_size = args.obfuscation_kernel.split(',')
+        obfuscator = Obfuscator(kernel_size=int(kernel_size), sigma=float(sigma), box_kernel_size=int(box_kernel_size))
 
-    detectors = {
-        'face': Detector(kind='face', weights_path=get_weights_path(args.weights, kind='face'),
-                         gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None),
-        'plate': Detector(kind='plate', weights_path=get_weights_path(args.weights, kind='plate'),
-                          gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None)
-    }
-    detection_thresholds = {
-        'face': args.face_threshold,
-        'plate': args.plate_threshold
-    }
-    anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size,
-                            compression_quality=args.compression_quality, save_detection_json_files=args.write_detections,
-                            reversed_processing=args.reversed_processing, parallel_dataloading=True, shuffle=args.shuffle)
-    anonymizer.anonymize_images(input_path=args.input, output_path=args.image_output, start=args.start, stop=args.stop, step=args.step,
-                                detection_thresholds=detection_thresholds, file_types=args.image_extensions.split(','))
-
-
-def setup_logging(logfile):
-    print(f"Logging to {logfile}")
-    if not logfile.parent.exists():
-        logfile.parent.mkdir(parents=True)
-        os.system(f"chmod -R 0777 {logfile.parent}")
-        
-    pid = os.getpid()
-    
-    logging.basicConfig(filename=logfile, filemode='a',
-                        format=f'%(asctime)s %(levelname)s {pid}: %(message)s',
-                        datefmt='%H:%M:%S', level=logging.INFO)
+        detectors = {
+            'face': Detector(kind='face', weights_path=get_weights_path(args.weights, kind='face'),
+                            gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None),
+            'plate': Detector(kind='plate', weights_path=get_weights_path(args.weights, kind='plate'),
+                            gpu_memory_fraction=args.gpu_memory_limit / 220 if args.gpu_memory_limit != 100 else None)
+        }
+        detection_thresholds = {
+            'face': args.face_threshold,
+            'plate': args.plate_threshold
+        }
+        anonymizer = Anonymizer(obfuscator=obfuscator, detectors=detectors, batch_size=args.batch_size,
+                                compression_quality=args.compression_quality, save_detection_json_files=args.write_detections,
+                                reversed_processing=args.reversed_processing, parallel_dataloading=True, shuffle=args.shuffle)
+        anonymizer.anonymize_images(input_path=args.input, output_path=args.image_output, start=args.start, stop=args.stop, step=args.step,
+                                    detection_thresholds=detection_thresholds, file_types=args.image_extensions.split(','))
+    except Exception as e:
+        logging.exception("Exception occurred during anonymization")
 
 
 if __name__ == '__main__':
     main()
+
