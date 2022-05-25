@@ -57,6 +57,7 @@ def save_detections(detections, detections_path):
 @dataclass
 class QueueEntry:
     is_stop_entry: bool = False
+    failed: bool = False
     image_data: Optional[np.ndarray] = None
     output_paths: Optional[List[Path]] = None
     
@@ -87,14 +88,14 @@ def get_next_batch_data(batch_size, img_path_gen, load_processed):
     is_finished = False
      # contains tuples of images and target output path. images are only loaded conditionally and may be None
     batch_data: List[Tuple[Optional[np.ndarray], Path]] = [] 
-    num_images = 0
+    num_skipped = 0
     while len(batch_data) < batch_size:
         try:
             img_path, output_path = next(img_path_gen)
             if not img_path.exists():
                 logging.warning(f"input path {img_path} does not exist!")
             if output_path.exists():
-                logging.debug(f"output for {output_path.name} already exists, skipping")
+                num_skipped += 1
                 
             img = load_np_image(img_path) if (not output_path.exists() or load_processed) else None
             batch_data.append((img, output_path))
@@ -102,7 +103,9 @@ def get_next_batch_data(batch_size, img_path_gen, load_processed):
             is_finished = True
             break
             
-    
+    if num_skipped > 0:
+        logging.debug(f"Skipped {num_skipped}/{len(batch_data)} images because anonymized versions exist.")
+        
     for output_path in {p.parent for _, p in batch_data}:
         output_path.parent.mkdir(exist_ok=True, parents=True)
     return batch_data, is_finished
@@ -124,38 +127,41 @@ def filter_batch(batch_data, max_size: int):
 def dataloader(batch_size: int,  input_output_path_iterator: Iterator[Tuple[Path, Path]], 
                ignore_existing=True, loop_until_complete=True):
     """Load batches of images and put them into the queue until the iterator has no remaining elements."""
-    batch_data = []
-    while True:
-        logging.debug(f"{os.getpid()} getting next batch...")
-        next_batch_data, is_finished = get_next_batch_data(batch_size * 4, input_output_path_iterator, ignore_existing)
-        batch_data += next_batch_data
-        logging.debug(f"{os.getpid()} done")
-        
-        # Gather images of the same shape, as images of variying shapes cannot be inside the same batch
-        while len(batch_data) > batch_size:
-            next_batch, batch_data = filter_batch(batch_data, max_size=batch_size)
-            images, paths = zip(*next_batch)
-            logging.debug(f"{os.getpid()} putting next batch into queue")
-            batch_queue.put(QueueEntry(image_data=images, output_paths=paths))
-            logging.debug(f"{os.getpid()} done")
+    try:
+        batch_data = []
+        while True:
+            logging.debug(f"{os.getpid()} getting next batch...")
+            next_batch_data, is_finished = get_next_batch_data(batch_size * 4, input_output_path_iterator, ignore_existing)
+            batch_data += next_batch_data
+            logging.debug(f"{os.getpid()} got next batch of size {len(next_batch_data)}")
             
-        if is_finished:
-            while len(batch_data) > 0:
+            # Gather images of the same shape, as images of variying shapes cannot be inside the same batch
+            while len(batch_data) > batch_size:
                 next_batch, batch_data = filter_batch(batch_data, max_size=batch_size)
                 images, paths = zip(*next_batch)
+                logging.debug(f"{os.getpid()} putting next batch into queue")
                 batch_queue.put(QueueEntry(image_data=images, output_paths=paths))
-            logging.info(f"{os.getpid()} dataloading finished")
-            batch_queue.put(QueueEntry(is_stop_entry=True))
-            return
-         
-        if not loop_until_complete:
-            return
-        else:
-            # Wait until previous batches have been consumed before loading further images
-            while batch_queue.qsize() > 3:
-                logging.debug(f"{os.getpid()} waiting for batch queue to reduce in size: {batch_queue.qsize()}")
-                time.sleep(1)
-        
+                logging.debug(f"{os.getpid()} done")
+                
+            if is_finished:
+                while len(batch_data) > 0:
+                    next_batch, batch_data = filter_batch(batch_data, max_size=batch_size)
+                    images, paths = zip(*next_batch)
+                    batch_queue.put(QueueEntry(image_data=images, output_paths=paths))
+                logging.info(f"{os.getpid()} dataloading finished")
+                batch_queue.put(QueueEntry(is_stop_entry=True))
+                return
+            
+            if not loop_until_complete:
+                return
+            else:
+                # Wait until previous batches have been consumed before loading further images
+                while batch_queue.qsize() > 3:
+                    logging.debug(f"{os.getpid()} waiting for batch queue to reduce in size: {batch_queue.qsize()}")
+                    time.sleep(1)
+    except:
+        batch_queue.put(QueueEntry(is_stop_entry=True, failed=True))
+        logging.exception("Error occurred during dataloading.")
 
 def datawriter():
     while True:
@@ -214,15 +220,7 @@ class Anonymizer:
             # Manually generate the next element in the queue
             dataloader(batch_size=self.batch_size, input_output_path_iterator=self.data_iter,
                        ignore_existing=self.overwrite_existing)
-        for i in range(10):
-            try:
-                return batch_queue.get(timeout=timeout_in_s / 10)
-            except Empty:
-                logging.info(f"Dataloader timeout {i+1}/10, waiting another {timeout_in_s / 10:.2f}s "
-                             "for next batch...")
-        logging.info(f"Unable to get any data within a timeout of {timeout_in_s}")
-        return QueueEntry(is_stop_entry=True)
-
+        return batch_queue.get()
             
     def prepare_dataloading(self, img_paths: List[Path], input_path, output_path):
         input_output_paths = [(img_path, output_path / img_path.relative_to(input_path))
@@ -252,8 +250,6 @@ class Anonymizer:
         self.datawriter.daemon = True
         self.datawriter.start()
         atexit.register(lambda: self.datawriter.terminate())
-        
-        
               
     def prepare_anonymization(self, input_path, file_types, output_path, start=0, stop=None, step=1):
         logging.info(f'Anonymizing images in {input_path} and saving the anonymized images to {output_path}...')
@@ -262,16 +258,17 @@ class Anonymizer:
         output_path.mkdir(exist_ok=True, parents=True)
         assert output_path.is_dir(), 'Output path must be a directory'
 
+        logging.info("Gathering input image paths... ")
+
         if self._img_paths_ is None:
             self._img_paths_ = []
-            logging.info("Gathering input image paths... ")
             for file_type in file_types:
                 matches = sorted(Path(input_path).glob(f'**/*.{file_type}'))
                 self._img_paths_.extend(matches[slice(start, stop, step)])
         else:
             self._img_paths_ = self._img_paths_[slice(start, stop, step)]
 
-        logging.info("Done. ")
+        logging.info("Done. Found {len(self._img_paths_)} to process.")
         self.prepare_dataloading(self._img_paths_, input_path, output_path)        
 
 
@@ -289,7 +286,7 @@ class Anonymizer:
                     
                 logging.debug(f"{os.getpid()} putting job into output queue")
                 output_queue.put(job)
-                logging.debug(f"{os.getpid()} done")
+                logging.debug(f"{os.getpid()} put job into queue")
         else:
             if batch.output_paths is not None:
                 for output_path in [p for p in batch.output_paths if p is not None]:
@@ -311,7 +308,7 @@ class Anonymizer:
                 next_batch = self.get_next_batch()
                 logging.debug(f"{os.getpid()} done. processing next batch")
                 self.process_batch(next_batch, detection_thresholds)
-                logging.debug(f"{os.getpid()} done.")    
+                logging.debug(f"{os.getpid()} batch finished processing.")    
                 # Iterate over the progress iterator to log the progress
                 for _ in range(len(next_batch.output_paths or [])):
                     next(progress_iter, None)
@@ -322,6 +319,9 @@ class Anonymizer:
                     last_permil = permil
                     logging.info(progress.format_message())
                 
+                if next_batch.failed:
+                    raise RuntimeError("Dataloader failed")
+                
                 if next_batch.is_stop_entry:
                     for _ in progress_iter:  # finalize the progress log
                         pass
@@ -331,17 +331,16 @@ class Anonymizer:
             output_queue.put(OutputJob(is_stop_entry=True))
                     
         finally:
-            time.sleep(.5)
-
             while output_queue.qsize() > 0:
                 logging.info(f"Waiting for output queue to finish: {output_queue.qsize()}")
+                time.sleep(.5)
             logging.info("Output queue finished.")
             
             completed: List[OutputJob] = []
             
             logging.info(f"Completed queue size: {completed_queue.qsize()}")
             while completed_queue.qsize() > 0:
-                job = completed_queue.get()
+                job = completed_queue.get(block=False)
                 if not job.is_stop_entry:
                     completed.append(job)
                     

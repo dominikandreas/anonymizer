@@ -37,6 +37,7 @@ def setup_logging(logfile, level=logging.INFO):
                         format=f'%(asctime)s %(levelname)s {pid}: %(message)s',
                         datefmt='%H:%M:%S', level=level)
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    logging.getLogger('PIL').setLevel(logging.WARNING)
     
 
 def parse_args():
@@ -140,10 +141,10 @@ def main():
                                 reversed_processing=args.reversed_processing, parallel_dataloading=True, shuffle=args.shuffle)
         anonymizer.anonymize_images(input_path=args.input, output_path=args.image_output, start=args.start, stop=args.stop, step=args.step,
                                     detection_thresholds=detection_thresholds, file_types=args.image_extensions.split(','))
-    except Exception as e:
+    except:
         logging.exception("Exception occurred during anonymization")
 
 
 if __name__ == '__main__':
     main()
-
+    logging.shutdown()
